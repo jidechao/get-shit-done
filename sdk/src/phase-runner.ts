@@ -239,6 +239,8 @@ export class PhaseRunner {
       if (!this.config.workflow.verifier) {
         this.logger?.debug('Skipping verify: config.workflow.verifier=false');
       } else {
+        // Verify has its own internal retry logic (gap closure). retryOnce only
+        // retries on unexpected session throws, not on verification outcomes like gaps_found.
         const verifyResult = await this.retryOnce('verify', () => this.runVerifyStep(phaseNumber, sessionOpts, callbacks, options));
         steps.push(verifyResult);
 
@@ -299,6 +301,9 @@ export class PhaseRunner {
   private async retryOnce<T extends PhaseStepResult>(label: string, fn: () => Promise<T>): Promise<T> {
     const result = await fn();
     if (result.success) return result;
+
+    // Don't retry verify outcomes (gaps_found, human_needed) — they have their own retry logic.
+    if (result.error?.startsWith('verification_')) return result;
 
     this.logger?.warn(`Step "${label}" failed, retrying once...`);
     return fn();
@@ -842,6 +847,7 @@ export class PhaseRunner {
         });
 
         if (decision === 'accept') {
+          outcome = 'passed';
           break; // Treat as passed
         } else if (decision === 'retry' && gapRetryCount < maxGapRetries) {
           gapRetryCount++;
@@ -916,6 +922,7 @@ export class PhaseRunner {
     }
 
     const durationMs = Date.now() - stepStart;
+    const verifySuccess = outcome === 'passed';
 
     this.eventStream.emitEvent({
       type: GSDEventType.PhaseStepComplete,
@@ -923,15 +930,17 @@ export class PhaseRunner {
       sessionId: lastResult?.sessionId ?? '',
       phaseNumber,
       step: PhaseStepType.Verify,
-      success: true,
+      success: verifySuccess,
       durationMs,
+      ...(!verifySuccess && { error: `verification_${outcome}` }),
     });
 
     return {
       step: PhaseStepType.Verify,
-      success: true,
+      success: verifySuccess,
       durationMs,
       planResults: allPlanResults,
+      ...(!verifySuccess && { error: `verification_${outcome}` }),
     };
   }
 

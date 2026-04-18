@@ -116,6 +116,95 @@ describe('withProjectRoot', () => {
     const enriched = withProjectRoot(tmpDir, result, {});
     expect(enriched.response_language).toBeUndefined();
   });
+
+  // Regression: #2400 — checkAgentsInstalled was looking at the wrong default
+  // directory (~/.claude/get-shit-done/agents) while the installer writes to
+  // ~/.claude/agents, causing agents_installed: false even on clean installs.
+  it('reports agents_installed: true when all expected agents exist in GSD_AGENTS_DIR', async () => {
+    const { MODEL_PROFILES } = await import('./config-query.js');
+    const agentsDir = join(tmpDir, 'fake-agents');
+    await mkdir(agentsDir, { recursive: true });
+    for (const name of Object.keys(MODEL_PROFILES)) {
+      await writeFile(join(agentsDir, `${name}.md`), '# stub');
+    }
+    const prev = process.env.GSD_AGENTS_DIR;
+    process.env.GSD_AGENTS_DIR = agentsDir;
+    try {
+      const enriched = withProjectRoot(tmpDir, {});
+      expect(enriched.agents_installed).toBe(true);
+      expect(enriched.missing_agents).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.GSD_AGENTS_DIR;
+      else process.env.GSD_AGENTS_DIR = prev;
+    }
+  });
+
+  it('reports missing agents when GSD_AGENTS_DIR is empty', async () => {
+    const agentsDir = join(tmpDir, 'empty-agents');
+    await mkdir(agentsDir, { recursive: true });
+    const prev = process.env.GSD_AGENTS_DIR;
+    process.env.GSD_AGENTS_DIR = agentsDir;
+    try {
+      const enriched = withProjectRoot(tmpDir, {}) as Record<string, unknown>;
+      expect(enriched.agents_installed).toBe(false);
+      expect((enriched.missing_agents as string[]).length).toBeGreaterThan(0);
+    } finally {
+      if (prev === undefined) delete process.env.GSD_AGENTS_DIR;
+      else process.env.GSD_AGENTS_DIR = prev;
+    }
+  });
+
+  // Regression: #2400 follow-up — installer honors CLAUDE_CONFIG_DIR for custom
+  // Claude install roots. The SDK check must follow the same precedence or it
+  // false-negatives agent presence on non-default installs.
+  it('honors CLAUDE_CONFIG_DIR when GSD_AGENTS_DIR is unset', async () => {
+    const { MODEL_PROFILES } = await import('./config-query.js');
+    const configDir = join(tmpDir, 'custom-claude');
+    const agentsDir = join(configDir, 'agents');
+    await mkdir(agentsDir, { recursive: true });
+    for (const name of Object.keys(MODEL_PROFILES)) {
+      await writeFile(join(agentsDir, `${name}.md`), '# stub');
+    }
+    const prevAgents = process.env.GSD_AGENTS_DIR;
+    const prevClaude = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.GSD_AGENTS_DIR;
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    try {
+      const enriched = withProjectRoot(tmpDir, {}) as Record<string, unknown>;
+      expect(enriched.agents_installed).toBe(true);
+      expect(enriched.missing_agents).toEqual([]);
+    } finally {
+      if (prevAgents === undefined) delete process.env.GSD_AGENTS_DIR;
+      else process.env.GSD_AGENTS_DIR = prevAgents;
+      if (prevClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prevClaude;
+    }
+  });
+
+  it('GSD_AGENTS_DIR takes precedence over CLAUDE_CONFIG_DIR', async () => {
+    const { MODEL_PROFILES } = await import('./config-query.js');
+    const winningDir = join(tmpDir, 'winning-agents');
+    const losingDir = join(tmpDir, 'losing-config', 'agents');
+    await mkdir(winningDir, { recursive: true });
+    await mkdir(losingDir, { recursive: true });
+    // Only populate the winning dir.
+    for (const name of Object.keys(MODEL_PROFILES)) {
+      await writeFile(join(winningDir, `${name}.md`), '# stub');
+    }
+    const prevAgents = process.env.GSD_AGENTS_DIR;
+    const prevClaude = process.env.CLAUDE_CONFIG_DIR;
+    process.env.GSD_AGENTS_DIR = winningDir;
+    process.env.CLAUDE_CONFIG_DIR = join(tmpDir, 'losing-config');
+    try {
+      const enriched = withProjectRoot(tmpDir, {}) as Record<string, unknown>;
+      expect(enriched.agents_installed).toBe(true);
+    } finally {
+      if (prevAgents === undefined) delete process.env.GSD_AGENTS_DIR;
+      else process.env.GSD_AGENTS_DIR = prevAgents;
+      if (prevClaude === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prevClaude;
+    }
+  });
 });
 
 describe('initExecutePhase', () => {
